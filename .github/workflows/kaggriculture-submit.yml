@@ -1,0 +1,59 @@
+name: Kaggriculture Submit
+
+on:
+  workflow_dispatch:
+    inputs:
+      archive:
+        description: 'Submission archive path relative to repository root'
+        required: true
+        default: 'submission.tar.gz'
+      message:
+        description: 'Kaggle submission message'
+        required: true
+        default: 'kaguru Phase3 baseline'
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Configure Kaggle credentials
+        env:
+          KAGGRICULTURE_KAGGLE_API_TOKEN: ${{ secrets.KAGGRICULTURE_KAGGLE_API_TOKEN }}
+          KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+          KAGGLE_JSON: ${{ secrets.KAGGLE_JSON }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.config/kaggle
+          if [ -n "${KAGGRICULTURE_KAGGLE_API_TOKEN:-}" ]; then
+            printf '%s' "$KAGGRICULTURE_KAGGLE_API_TOKEN" > ~/.config/kaggle/api_token
+          elif [ -n "${KAGGLE_API_TOKEN:-}" ]; then
+            printf '%s' "$KAGGLE_API_TOKEN" > ~/.config/kaggle/api_token
+          elif [ -n "${KAGGLE_JSON:-}" ]; then
+            printf '%s' "$KAGGLE_JSON" > ~/.config/kaggle/kaggle.json
+            chmod 600 ~/.config/kaggle/kaggle.json
+          elif [ -n "${KAGGLE_USERNAME:-}" ] && [ -n "${KAGGLE_KEY:-}" ]; then
+            printf '{"username":"%s","key":"%s"}' "$KAGGLE_USERNAME" "$KAGGLE_KEY" > ~/.config/kaggle/kaggle.json
+            chmod 600 ~/.config/kaggle/kaggle.json
+          else
+            echo 'No Kaggle credentials configured.' >&2
+            exit 1
+          fi
+      - name: Validate archive
+        env:
+          ARCHIVE: ${{ inputs.archive }}
+        run: test -f "$ARCHIVE"
+      - name: Submit
+        env:
+          ARCHIVE: ${{ inputs.archive }}
+          MESSAGE: ${{ inputs.message }}
+        run: kaggle competitions submit -c kaggriculture -f "$ARCHIVE" -m "$MESSAGE"
