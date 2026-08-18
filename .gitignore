@@ -1,0 +1,9 @@
+kaggle.json
+.env
+.env.*
+*.tar.gz
+__pycache__/
+*.pyc
+artifacts/
+outputs/
+logs/
