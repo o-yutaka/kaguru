@@ -8,10 +8,6 @@ on:
       - scripts/scout_kaggriculture.py
       - .github/workflows/kaggriculture-scout.yml
 
-authorization:
-  permissions:
-    contents: read
-
 jobs:
   scout:
     runs-on: ubuntu-latest
