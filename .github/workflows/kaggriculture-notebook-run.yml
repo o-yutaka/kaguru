@@ -1,0 +1,86 @@
+name: Kaggriculture Notebook Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - notebooks/BLACK_Kaggriculture_Research.ipynb
+      - kaggle-kernel/kernel-metadata.json
+      - .github/workflows/kaggriculture-notebook-run.yml
+  workflow_dispatch:
+
+jobs:
+  run-kaggle-notebook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    env:
+      KAGGRICULTURE_KAGGLE_API_TOKEN: ${{ secrets.KAGGRICULTURE_KAGGLE_API_TOKEN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_JSON: ${{ secrets.KAGGLE_JSON }}
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Configure Kaggle credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.config/kaggle
+          if [[ -n "${KAGGRICULTURE_KAGGLE_API_TOKEN:-}" ]]; then
+            printf '%s' "$KAGGRICULTURE_KAGGLE_API_TOKEN" > ~/.config/kaggle/access_token
+            chmod 600 ~/.config/kaggle/access_token
+          elif [[ -n "${KAGGLE_API_TOKEN:-}" ]]; then
+            printf '%s' "$KAGGLE_API_TOKEN" > ~/.config/kaggle/access_token
+            chmod 600 ~/.config/kaggle/access_token
+          elif [[ -n "${KAGGLE_JSON:-}" ]]; then
+            printf '%s' "$KAGGLE_JSON" > ~/.config/kaggle/kaggle.json
+            chmod 600 ~/.config/kaggle/kaggle.json
+          elif [[ -n "${KAGGLE_USERNAME:-}" && -n "${KAGGLE_KEY:-}" ]]; then
+            python - <<'PY'
+import json, os
+from pathlib import Path
+p=Path.home()/'.config/kaggle/kaggle.json'
+p.write_text(json.dumps({'username':os.environ['KAGGLE_USERNAME'],'key':os.environ['KAGGLE_KEY']}), encoding='utf-8')
+p.chmod(0o600)
+PY
+          else
+            echo 'No Kaggle credential secret available.' >&2
+            exit 86
+          fi
+      - name: Prepare kernel package
+        run: |
+          rm -rf /tmp/kaggriculture-kernel
+          mkdir -p /tmp/kaggriculture-kernel
+          cp notebooks/BLACK_Kaggriculture_Research.ipynb /tmp/kaggriculture-kernel/BLACK_Kaggriculture_Research.ipynb
+          cp kaggle-kernel/kernel-metadata.json /tmp/kaggriculture-kernel/kernel-metadata.json
+      - name: Push and run Kaggle Notebook
+        working-directory: /tmp
+        run: kaggle kernels push -p kaggriculture-kernel
+      - name: Wait for notebook status
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            echo "poll=$i"
+            kaggle kernels status o-yutaka/black-kaggriculture-research || true
+            sleep 20
+          done
+      - name: Fetch latest notebook output
+        run: |
+          mkdir -p artifacts/kaggriculture-notebook
+          kaggle kernels output o-yutaka/black-kaggriculture-research -p artifacts/kaggriculture-notebook || true
+      - name: Upload Kaggle output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggriculture-notebook-${{ github.run_id }}
+          path: artifacts/kaggriculture-notebook
+          if-no-files-found: warn
+          retention-days: 14
