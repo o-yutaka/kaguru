@@ -1,0 +1,6 @@
+{
+  "competition": "kaggriculture",
+  "platform": "kaggle",
+  "official": true,
+  "submission_command": "kaggle competitions submit -c kaggriculture -f submission.tar.gz -m \"message\""
+}
