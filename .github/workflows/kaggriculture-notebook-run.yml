@@ -9,6 +9,8 @@ on:
       - .github/workflows/kaggriculture-notebook-run.yml
   workflow_dispatch:
 
+# Triggered for real Kaggle Notebook execution; do not confuse this with local-only analysis.
+
 jobs:
   run-kaggle-notebook:
     runs-on: ubuntu-latest
