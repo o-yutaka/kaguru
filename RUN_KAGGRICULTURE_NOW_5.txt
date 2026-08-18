@@ -1,0 +1,1 @@
+One-shot trigger marker for official Kaggriculture deep research run. No strategy code.
