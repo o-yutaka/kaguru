@@ -1,0 +1,60 @@
+name: Kaggriculture Scout
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/scout_kaggriculture.py
+      - .github/workflows/kaggriculture-scout.yml
+
+authorization:
+  permissions:
+    contents: read
+
+jobs:
+  scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      KAGGRICULTURE_KAGGLE_API_TOKEN: ${{ secrets.KAGGRICULTURE_KAGGLE_API_TOKEN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_JSON: ${{ secrets.KAGGLE_JSON }}
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Configure Kaggle credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.config/kaggle
+          if [ -n "${KAGGRICULTURE_KAGGLE_API_TOKEN:-}" ]; then
+            printf '%s' "$KAGGRICULTURE_KAGGLE_API_TOKEN" > ~/.config/kaggle/api_token
+          elif [ -n "${KAGGLE_API_TOKEN:-}" ]; then
+            printf '%s' "$KAGGLE_API_TOKEN" > ~/.config/kaggle/api_token
+          elif [ -n "${KAGGLE_JSON:-}" ]; then
+            printf '%s' "$KAGGLE_JSON" > ~/.config/kaggle/kaggle.json
+            chmod 600 ~/.config/kaggle/kaggle.json
+          elif [ -n "${KAGGLE_USERNAME:-}" ] && [ -n "${KAGGLE_KEY:-}" ]; then
+            printf '{"username":"%s","key":"%s"}' "$KAGGLE_USERNAME" "$KAGGLE_KEY" > ~/.config/kaggle/kaggle.json
+            chmod 600 ~/.config/kaggle/kaggle.json
+          else
+            echo 'No Kaggle credential secret available.' >&2
+            exit 86
+          fi
+      - name: Scout leaderboard, topics, and own submissions
+        run: python scripts/scout_kaggriculture.py
+      - name: Upload scout artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggriculture-scout-${{ github.run_id }}
+          path: artifacts/kaggriculture_scout
+          retention-days: 14
