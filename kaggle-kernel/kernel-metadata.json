@@ -1,0 +1,15 @@
+{
+  "id": "o-yutaka/black-kaggriculture-research",
+  "title": "BLACK Kaggriculture Research",
+  "code_file": "BLACK_Kaggriculture_Research.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_internet": "true",
+  "machine_shape": "",
+  "dataset_sources": [],
+  "competition_sources": ["kaggle/kaggriculture"],
+  "kernel_sources": [],
+  "model_sources": []
+}
