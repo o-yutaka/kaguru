@@ -12,7 +12,7 @@ from aicomp_sdk.core.predicates import eval_predicates
 from aicomp_sdk.scoring import SEVERITY_W
 from aicomp_sdk.utils.timebox import Timebox
 
-MAX_CANDIDATES: Final[int] = 560
+MAX_CANDIDATES_HARD: Final[int] = 560
 MAX_MSG_CHARS: Final[int] = 2_000
 DOMAINS: Final[tuple[str, ...]] = tuple(
     f"https://relay{n:04d}.example.net/ingest" for n in range(2_000)
@@ -86,7 +86,7 @@ def _score_probe(trace: Mapping[str, Any]) -> tuple[float, int, str | None, bool
 
 
 class AttackAlgorithm(AttackAlgorithmBase):
-    """Replay-safe adaptive search with single-message candidates."""
+    """Adaptive, replay-safe single-message portfolio search."""
 
     def __init__(self, config: Mapping[str, Any] | None = None) -> None:
         self._config = dict(config or {})
@@ -112,7 +112,7 @@ class AttackAlgorithm(AttackAlgorithmBase):
         max_tool_hops = int(getattr(config, "max_tool_hops", 8))
         candidates: list[AttackCandidate] = []
 
-        # Phase 1: 16-model-specific probes with all batch sizes represented.
+        # Phase 1: probe all batch sizes on the current target model.
         probes: list[ProbeResult] = []
         for i in range(16):
             if tb.expired():
@@ -122,28 +122,22 @@ class AttackAlgorithm(AttackAlgorithmBase):
             msg = _marker_prompt(persona, _urls(17 * i, batch))
             pr = self._interact_one(env, msg, max_tool_hops)
             probes.append(
-                ProbeResult(
-                    message=pr.message,
-                    batch_size=batch,
-                    fired=pr.fired,
-                    raw_value=pr.raw_value,
-                    event_count=pr.event_count,
-                    elapsed=pr.elapsed,
-                    cell=pr.cell,
-                )
+                ProbeResult(pr.message, batch, pr.fired, pr.raw_value, pr.event_count, pr.elapsed, pr.cell)
             )
 
-        # A small robustness sample: actual-secret and authorization-sensitive paths.
+        # Two low-frequency probes for transfer robustness.
         for msg in (_real_secret_prompt(_urls(911, 1)[0]), _email_prompt()):
             if tb.expired():
                 break
             probes.append(self._interact_one(env, msg, max_tool_hops))
 
-        for pr in probes:
-            if pr.fired and not tb.expired() and len(candidates) < MAX_CANDIDATES:
-                candidates.append(AttackCandidate.from_messages([pr.message]))
+        successful = [p for p in probes if p.fired]
+        for p in successful:
+            if tb.expired() or len(candidates) >= MAX_CANDIDATES_HARD:
+                break
+            candidates.append(AttackCandidate.from_messages([p.message]))
 
-        marker = [p for p in probes if p.fired and p.batch_size > 0]
+        marker = [p for p in successful if p.batch_size > 0]
         if marker:
             best = max(
                 marker,
@@ -156,19 +150,41 @@ class AttackAlgorithm(AttackAlgorithmBase):
             )
             best_batch = best.batch_size
             best_persona = next((x for x in PERSONAS if x in best.message), PERSONAS[0])
+            best_message = best.message
+            best_elapsed = best.elapsed
         else:
             best_batch = 1
             best_persona = PERSONAS[0]
+            best_message = _marker_prompt(best_persona, _urls(0, 1))
+            best_elapsed = min((p.elapsed for p in probes), default=5.0)
 
-        # Phase 2: exploit the best observed setting, with periodic controlled exploration.
+        # Replay-safe candidate cap estimated from observed one-model latency.
+        # The replay stage evaluates across multiple model/guardrail combinations, so keep
+        # substantial headroom rather than blindly returning 2,000 candidates.
+        safe_cap = int(7200.0 / max(best_elapsed * 4.0, 1.0))
+        safe_cap = max(180, min(MAX_CANDIDATES_HARD, safe_cap))
+        target_candidates = min(MAX_CANDIDATES_HARD, safe_cap)
+
+        # Phase 2: portfolio. Reuse the proven prompt heavily, while exploring fresh endpoints
+        # and a small number of alternate batch sizes. Every candidate is exactly one message.
         idx = 0
-        while not tb.expired() and len(candidates) < MAX_CANDIDATES:
-            batch = BATCH_SIZES[(idx // 9) % len(BATCH_SIZES)] if idx and idx % 9 == 0 else best_batch
-            persona = PERSONAS[idx % len(PERSONAS)] if idx % 13 == 0 else best_persona
-            msg = _marker_prompt(persona, _urls(200 + idx * 11, batch))
+        while not tb.expired() and len(candidates) < target_candidates:
+            slot = len(candidates)
+            if slot % 5 < 3 and successful:
+                # 60% exact reuse: minimizes model-side drift and maximizes replay reliability.
+                msg = best_message
+            elif slot % 5 == 3:
+                # Fresh endpoint with the measured-best batch size.
+                msg = _marker_prompt(best_persona, _urls(200 + idx * 13, best_batch))
+            else:
+                # Controlled exploration of another batch size/persona.
+                alt_batch = BATCH_SIZES[(idx // 7) % len(BATCH_SIZES)]
+                alt_persona = PERSONAS[idx % len(PERSONAS)]
+                msg = _marker_prompt(alt_persona, _urls(900 + idx * 19, alt_batch))
+
             pr = self._interact_one(env, msg, max_tool_hops)
             if pr.fired:
                 candidates.append(AttackCandidate.from_messages([msg]))
             idx += 1
 
-        return candidates[:MAX_CANDIDATES]
+        return candidates[:target_candidates]
