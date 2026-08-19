@@ -1,0 +1,1 @@
+Launch is performed by opening a RUN-KAGGRICULTURE-FASTLANE issue. The dedicated workflow uses the separate Kaggle kernel slug o-yutaka/black-kaggriculture-fastlane so it does not overwrite the existing deep-research kernel.
