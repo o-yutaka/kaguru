@@ -1,0 +1,105 @@
+name: Kaggriculture Fast Lane Run
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  run-fastlane:
+    if: startsWith(github.event.issue.title, 'RUN-KAGGRICULTURE-FASTLANE')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KAGGRICULTURE_KAGGLE_API_TOKEN: ${{ secrets.KAGGRICULTURE_KAGGLE_API_TOKEN }}
+      KAGGLE_API_TOKEN: ${{ secrets.KAGGLE_API_TOKEN }}
+      KAGGLE_JSON: ${{ secrets.KAGGLE_JSON }}
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Kaggle CLI
+        run: python -m pip install --upgrade kaggle
+      - name: Configure Kaggle credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.config/kaggle
+          if [[ -n "${KAGGRICULTURE_KAGGLE_API_TOKEN:-}" ]]; then
+            printf '%s' "$KAGGRICULTURE_KAGGLE_API_TOKEN" > ~/.config/kaggle/access_token
+          elif [[ -n "${KAGGLE_API_TOKEN:-}" ]]; then
+            printf '%s' "$KAGGLE_API_TOKEN" > ~/.config/kaggle/access_token
+          elif [[ -n "${KAGGLE_JSON:-}" ]]; then
+            printf '%s' "$KAGGLE_JSON" > ~/.config/kaggle/kaggle.json
+            chmod 600 ~/.config/kaggle/kaggle.json
+          elif [[ -n "${KAGGLE_USERNAME:-}" && -n "${KAGGLE_KEY:-}" ]]; then
+            python - <<'PY'
+import json, os
+from pathlib import Path
+p=Path.home()/'.config/kaggle/kaggle.json'
+p.write_text(json.dumps({'username':os.environ['KAGGLE_USERNAME'],'key':os.environ['KAGGLE_KEY']}), encoding='utf-8')
+p.chmod(0o600)
+PY
+          else
+            echo 'No Kaggle credentials available' >&2
+            exit 86
+          fi
+      - name: Prepare fast-lane kernel
+        run: |
+          rm -rf /tmp/kaggriculture-fastlane
+          mkdir -p /tmp/kaggriculture-fastlane
+          cp notebooks/BLACK_Kaggriculture_FastLane.ipynb /tmp/kaggriculture-fastlane/
+          cat > /tmp/kaggriculture-fastlane/kernel-metadata.json <<'JSON'
+          {
+            "id":"o-yutaka/black-kaggriculture-fastlane",
+            "title":"BLACK Kaggriculture Fast Lane",
+            "code_file":"BLACK_Kaggriculture_FastLane.ipynb",
+            "language":"python",
+            "kernel_type":"notebook",
+            "is_private":"true",
+            "enable_gpu":"false",
+            "enable_internet":"true",
+            "machine_shape":"",
+            "dataset_sources":[],
+            "competition_sources":["kaggle/kaggriculture"],
+            "kernel_sources":[],
+            "model_sources":[]
+          }
+          JSON
+      - name: Push and run fast lane
+        run: kaggle kernels push -p /tmp/kaggriculture-fastlane
+      - name: Poll
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            STATUS="$(kaggle kernels status o-yutaka/black-kaggriculture-fastlane 2>&1 || true)"
+            echo "$STATUS"
+            if echo "$STATUS" | grep -Eiq 'complete|error|failed'; then break; fi
+            sleep 15
+          done
+      - name: Download outputs
+        if: always()
+        run: |
+          mkdir -p artifacts/kaggriculture-fastlane
+          kaggle kernels output o-yutaka/black-kaggriculture-fastlane -p artifacts/kaggriculture-fastlane || true
+      - name: Comment result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue comment ${{ github.event.issue.number }} --body 'BLACK Fast Lane Kaggriculture run triggered. Outputs are attached to the workflow artifact.'
+      - name: Upload outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaggriculture-fastlane-${{ github.run_id }}
+          path: artifacts/kaggriculture-fastlane
+          if-no-files-found: warn
+          retention-days: 14
