@@ -9,9 +9,6 @@ on:
       - .github/workflows/kaggriculture-notebook-run.yml
   workflow_dispatch:
 
-# Triggered for real Kaggle Notebook execution; do not confuse this with local-only analysis.
-# manual-kaguru-rerun: 2026-08-20
-
 jobs:
   run-kaggle-notebook:
     runs-on: ubuntu-latest
@@ -26,11 +23,14 @@ jobs:
       KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install Kaggle CLI
         run: python -m pip install --upgrade kaggle
+
       - name: Configure Kaggle credentials
         shell: bash
         run: |
@@ -49,41 +49,97 @@ jobs:
             python - <<'PY'
 import json, os
 from pathlib import Path
-p=Path.home()/'.config/kaggle/kaggle.json'
-p.write_text(json.dumps({'username':os.environ['KAGGLE_USERNAME'],'key':os.environ['KAGGLE_KEY']}), encoding='utf-8')
+p = Path.home() / '.config/kaggle/kaggle.json'
+p.write_text(json.dumps({'username': os.environ['KAGGLE_USERNAME'], 'key': os.environ['KAGGLE_KEY']}), encoding='utf-8')
 p.chmod(0o600)
 PY
           else
             echo 'No Kaggle credential secret available.' >&2
             exit 86
           fi
+
+      - name: Verify Kaggle authentication
+        run: kaggle whoami
+
       - name: Prepare kernel package
         run: |
+          set -euo pipefail
           rm -rf /tmp/kaggriculture-kernel
           mkdir -p /tmp/kaggriculture-kernel
           cp notebooks/BLACK_Kaggriculture_Research.ipynb /tmp/kaggriculture-kernel/BLACK_Kaggriculture_Research.ipynb
           cp kaggle-kernel/kernel-metadata.json /tmp/kaggriculture-kernel/kernel-metadata.json
+          printf '%s\n' "${GITHUB_SHA}" > /tmp/kaggriculture-kernel/COMMIT_SHA.txt
+
       - name: Push and run Kaggle Notebook
+        id: kaggle_push
         working-directory: /tmp
-        run: kaggle kernels push -p kaggriculture-kernel
-      - name: Wait for notebook status
+        shell: bash
+        run: |
+          set -o pipefail
+          kaggle kernels push -p kaggriculture-kernel 2>&1 | tee "$GITHUB_WORKSPACE/kaggle_push.log"
+
+      - name: Poll Kaggle Notebook status
+        id: kaggle_status
         shell: bash
         run: |
           set -euo pipefail
-          for i in $(seq 1 24); do
-            echo "poll=$i"
-            kaggle kernels status o-yutaka/black-kaggriculture-research || true
+          deadline=$(( $(date +%s) + 1500 ))
+          status='UNKNOWN'
+          while (( $(date +%s) < deadline )); do
+            out=$(kaggle kernels status o-yutaka/black-kaggriculture-research 2>&1) || true
+            printf '%s\n' "$out"
+            printf '%s\n' "$out" > kaggle_status_latest.log
+            if grep -q 'COMPLETE' <<<"$out"; then status='COMPLETE'; break; fi
+            if grep -qE 'ERROR|FAILED|CANCELLED' <<<"$out"; then status='ERROR'; break; fi
+            if grep -qE 'RUNNING|QUEUED|PENDING' <<<"$out"; then status='RUNNING'; fi
             sleep 20
           done
+          echo "KAGGLE_STATUS=$status" >> "$GITHUB_ENV"
+          if [[ "$status" == 'ERROR' || "$status" == 'UNKNOWN' ]]; then exit 1; fi
+
       - name: Fetch latest notebook output
+        if: always()
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p artifacts/kaggriculture-notebook
-          kaggle kernels output o-yutaka/black-kaggriculture-research -p artifacts/kaggriculture-notebook || true
+          kaggle kernels output o-yutaka/black-kaggriculture-research -p artifacts/kaggriculture-notebook 2>&1 | tee kaggle_output.log || true
+          cp kaggle_push.log artifacts/kaggriculture-notebook/ 2>/dev/null || true
+          cp kaggle_status_latest.log artifacts/kaggriculture-notebook/ 2>/dev/null || true
+          cp /tmp/kaggriculture-kernel/COMMIT_SHA.txt artifacts/kaggriculture-notebook/ 2>/dev/null || true
+          git rev-parse HEAD > artifacts/kaggriculture-notebook/github_commit.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > artifacts/kaggriculture-notebook/retrieved_at.txt
+
+      - name: Create execution report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/kaggriculture-notebook
+          score='NOT_OBSERVED'
+          submission_ref='NOT_OBSERVED'
+          if [[ -f artifacts/kaggriculture-notebook/submission.csv ]]; then
+            score=$(grep -E 'Score|score' artifacts/kaggriculture-notebook/submission.csv | tail -1 || true)
+          fi
+          cat > artifacts/kaggriculture-notebook/execution_report.txt <<EOF
+EXECUTION_STATUS=${{ job.status }}
+COMMIT=${GITHUB_SHA}
+KAGGLE_KERNEL=o-yutaka/black-kaggriculture-research
+KAGGLE_STATUS=${KAGGLE_STATUS:-NOT_OBSERVED}
+OUTPUT_FOUND=$(find artifacts/kaggriculture-notebook -type f | wc -l)
+MEASURED_SCORE=$score
+SUBMISSION_REF=$submission_ref
+ERROR=$([[ "${KAGGLE_STATUS:-}" == "ERROR" ]] && echo ERROR || echo NONE)
+EOF
+          cat artifacts/kaggriculture-notebook/execution_report.txt
+
       - name: Upload Kaggle output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kaggriculture-notebook-${{ github.run_id }}
-          path: artifacts/kaggriculture-notebook
+          path: |
+            artifacts/kaggriculture-notebook
+            kaggle_push.log
           if-no-files-found: warn
           retention-days: 14
